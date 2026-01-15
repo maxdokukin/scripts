@@ -1,0 +1,13 @@
+next steps:
+
+copy other static resources to the /data/scr
+create copy of thye projects table
+	update the paths
+	add git repos column
+	drop unused columns
+
+push new resources to the vm
+try new projects table and see if everything well get fucked up instantly
+
+find a way to unbify github readme and the website page:wq
+
