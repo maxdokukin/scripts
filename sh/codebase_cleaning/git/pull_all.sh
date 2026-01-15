@@ -18,7 +18,6 @@ fi
 echo "Starting pull updates in: $BASE_DIR\n"
 
 # 3. Iterate through every subdirectory
-# The (/) suffix in Zsh ensures we only loop through directories
 for repo in "$BASE_DIR"/*(/); do
     if [[ -d "$repo/.git" ]]; then
         ((TOTAL_REPOS++))
@@ -27,6 +26,16 @@ for repo in "$BASE_DIR"/*(/); do
         # Change into the repo directory
         cd "$repo" || continue
 
+        # --- NEW: Check for local changes ---
+        # -uno ignores untracked files. Remove "-uno" if you want to skip 
+        # pull even if there are new untracked files present.
+        if [[ -n $(git status --porcelain -uno) ]]; then
+            echo "⚠️  Skipped:     $REPO_NAME (Local changes detected)"
+            cd - > /dev/null
+            continue
+        fi
+        # ------------------------------------
+
         # Run git pull and capture both stdout and stderr
         OUTPUT=$(git pull 2>&1)
         EXIT_CODE=$?
@@ -34,7 +43,6 @@ for repo in "$BASE_DIR"/*(/); do
         # 4. Check status and print emojis
         if [[ $EXIT_CODE -ne 0 ]]; then
             echo "❌ Failed:      $REPO_NAME"
-            # Optional: echo "$OUTPUT" | sed 's/^/  /' # Uncomment to see error details
         elif [[ "$OUTPUT" == *"Already up to date"* ]]; then
             echo "💤 No changes:  $REPO_NAME"
         else
