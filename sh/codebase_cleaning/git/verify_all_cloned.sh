@@ -21,40 +21,51 @@ fi
 echo "🔍 Fetching repository list from GitHub..."
 
 # 2. Get list of remote repos (names only)
-# We use --limit 1000 to ensure we get all repos
 remote_repos=($(gh repo list --limit 1000 --json name --template '{{range .}}{{.name}}{{"\n"}}{{end}}'))
 
 # 3. Get list of local directories
-# (N:t) is Zsh magic: N (nullglob), :t (tail/basename only)
 local_dirs=($TARGET_DIR/*(/N:t))
 
-# 4. Compare the lists
-missing_repos=()
-cloned_count=0
+# 4. Map the lists using associative arrays
+typeset -A in_git
+typeset -A in_local
 
 for repo in "${remote_repos[@]}"; do
-    if (( ${local_dirs[(Ie)$repo]} )); then
-        ((cloned_count++))
-    else
-        missing_repos+=("$repo")
-    fi
+    in_git[$repo]=1
 done
 
+for dir in "${local_dirs[@]}"; do
+    in_local[$dir]=1
+done
+
+# Combine both arrays to get a unique list of all project slugs
+all_keys=($(print -l "${remote_repos[@]}" "${local_dirs[@]}" | sort -u | awk 'NF'))
+
 # 5. Print the Report
-echo "---------------------------------------"
-echo "📊 Verification Report"
-echo "---------------------------------------"
+echo "\n📊 Verification Report"
+echo "-----------------------------------------------------------------------------------------------"
+printf "%-55s | %-15s | %-15s\n" "proj-slug" "present_locally" "present_git"
+echo "--------------------------------------------------------|-----------------|--------------------"
+
+for proj in "${all_keys[@]}"; do
+    
+    # Check local status
+    if [[ -n "${in_local[$proj]}" ]]; then 
+        loc="✅"
+    else 
+        loc="❌"
+    fi
+    
+    # Check git status
+    if [[ -n "${in_git[$proj]}" ]]; then 
+        git="✅"
+    else 
+        git="❌"
+    fi
+    
+    printf "%-55s | %-15s | %-15s\n" "$proj" "$loc" "$git"
+done
+
+echo "-----------------------------------------------------------------------------------------------"
 echo "Total on GitHub:  ${#remote_repos[@]}"
 echo "Total Local:      ${#local_dirs[@]}"
-echo "Already Cloned:   ✅ $cloned_count"
-
-if [[ ${#missing_repos[@]} -eq 0 ]]; then
-    echo "Status:           🎉 Everything is synced!"
-else
-    echo "Status:           ⚠️  ${#missing_repos[@]} repos are missing locally."
-    echo "\nMissing Repositories:"
-    for missing in "${missing_repos[@]}"; do
-        echo "  - $missing"
-    done
-fi
-echo "---------------------------------------"
