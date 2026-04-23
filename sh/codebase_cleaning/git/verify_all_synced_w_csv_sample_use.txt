@@ -1,0 +1,1 @@
+./verify_all_synced_w_csv.sh  /Users/max/Codebase/github /Users/max/Downloads/projects_rows.csv
