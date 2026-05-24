@@ -1,4 +1,3 @@
-cat > launch_ha.sh <<'EOF_LAUNCH'
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -368,7 +367,7 @@ check_port_available() {
     return 0
   fi
 
-  if nc -z 127.0.0.1 "$HA_PORT" >/dev/null 2>&1; then
+  if nc -z 0.0.0.0 "$HA_PORT" >/dev/null 2>&1; then
     die "Port $HA_PORT is already in use. Stop the conflicting process or run: HA_PORT=8124 $0 start"
   fi
 }
@@ -395,7 +394,7 @@ build_qemu_args() {
     "${QEMU_FIRMWARE_ARGS[@]}"
     -drive "if=none,id=haosdisk,format=qcow2,file=$DISK_PATH,cache=writethrough,discard=unmap"
     -device "virtio-blk-pci,drive=haosdisk,bootindex=0"
-    -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:${HA_PORT}-:8123"
+    -netdev "user,id=net0,hostfwd=tcp:0.0.0.0:${HA_PORT}-:8123"
     -device "virtio-net-pci,netdev=net0"
     -device "virtio-rng-pci"
     -qmp "unix:$QMP_SOCKET,server=on,wait=off"
@@ -435,7 +434,7 @@ wait_for_port() {
   local max_seconds="${1:-600}"
   local elapsed=0
 
-  log "Waiting for Home Assistant on http://127.0.0.1:$HA_PORT"
+  log "Waiting for Home Assistant on http://0.0.0.0:$HA_PORT"
 
   while (( elapsed < max_seconds )); do
     if ! is_running; then
@@ -444,8 +443,8 @@ wait_for_port() {
       return 1
     fi
 
-    if nc -z 127.0.0.1 "$HA_PORT" >/dev/null 2>&1; then
-      log "Home Assistant port is open: http://127.0.0.1:$HA_PORT"
+    if nc -z 0.0.0.0 "$HA_PORT" >/dev/null 2>&1; then
+      log "Home Assistant port is open: http://0.0.0.0:$HA_PORT"
       return 0
     fi
 
@@ -459,7 +458,7 @@ wait_for_port() {
 
   log "VM is running, but Home Assistant has not opened port $HA_PORT yet."
   log "Check logs with: $0 logs"
-  log "Open manually when ready: http://127.0.0.1:$HA_PORT"
+  log "Open manually when ready: http://0.0.0.0:$HA_PORT"
   return 0
 }
 
@@ -468,7 +467,7 @@ start_background() {
 
   if is_running; then
     log "$VM_NAME is already running. PID: $(cat "$PID_FILE")"
-    log "URL: http://127.0.0.1:$HA_PORT"
+    log "URL: http://0.0.0.0:$HA_PORT"
     return 0
   fi
 
@@ -486,7 +485,7 @@ start_background() {
   log "Firmware: $EFI_CODE"
   [[ -n "${EFI_VARS:-}" ]] && log "Firmware vars: $EFI_VARS"
   [[ -n "${HAOS_ASSET_NAME:-}" ]] && log "HAOS asset: $HAOS_ASSET_NAME"
-  log "URL: http://127.0.0.1:$HA_PORT"
+  log "URL: http://0.0.0.0:$HA_PORT"
 
   nohup "$QEMU_BIN" \
     "${QEMU_ARGS[@]}" \
@@ -525,7 +524,7 @@ start_foreground() {
   log "Disk: $DISK_PATH"
   log "Firmware: $EFI_CODE"
   [[ -n "${EFI_VARS:-}" ]] && log "Firmware vars: $EFI_VARS"
-  log "URL after boot: http://127.0.0.1:$HA_PORT"
+  log "URL after boot: http://0.0.0.0:$HA_PORT"
   log "Exit QEMU console with Ctrl-A then X."
 
   exec "$QEMU_BIN" \
@@ -607,7 +606,7 @@ status_vm() {
 
     echo "$VM_NAME is running."
     echo "PID: $pid"
-    echo "URL: http://127.0.0.1:$HA_PORT"
+    echo "URL: http://0.0.0.0:$HA_PORT"
     echo "Disk: $DISK_PATH"
     echo "QEMU: $QEMU_BIN"
     echo "Machine: $QEMU_MACHINE"
@@ -619,14 +618,14 @@ status_vm() {
     echo "Serial log: $SERIAL_LOG"
     echo "QEMU log: $QEMU_LOG"
 
-    if nc -z 127.0.0.1 "$HA_PORT" >/dev/null 2>&1; then
+    if nc -z 0.0.0.0 "$HA_PORT" >/dev/null 2>&1; then
       echo "Home Assistant port: open"
     else
       echo "Home Assistant port: not open yet"
     fi
   else
     echo "$VM_NAME is not running."
-    echo "URL: http://127.0.0.1:$HA_PORT"
+    echo "URL: http://0.0.0.0:$HA_PORT"
     echo "Disk: ${DISK_PATH:-unknown}"
     [[ -n "${HA_BOARD:-}" ]] && echo "HA board: $HA_BOARD"
     [[ -n "${HAOS_ASSET_NAME:-}" ]] && echo "HAOS asset: $HAOS_ASSET_NAME"
@@ -650,7 +649,7 @@ doctor_vm() {
   echo "CPUs: $CPUS"
   echo "Firmware: $EFI_CODE"
   [[ -n "${EFI_VARS:-}" ]] && echo "Firmware vars: $EFI_VARS"
-  echo "URL: http://127.0.0.1:$HA_PORT"
+  echo "URL: http://0.0.0.0:$HA_PORT"
 }
 
 tail_logs() {
@@ -661,12 +660,12 @@ tail_logs() {
 }
 
 print_url() {
-  echo "http://127.0.0.1:$HA_PORT"
+  echo "http://0.0.0.0:$HA_PORT"
 }
 
 open_url() {
   local url
-  url="http://127.0.0.1:$HA_PORT"
+  url="http://0.0.0.0:$HA_PORT"
   if command -v open >/dev/null 2>&1; then
     open "$url"
   else
@@ -720,6 +719,3 @@ case "$cmd" in
   help|-h|--help) usage ;;
   *) usage >&2; exit 1 ;;
 esac
-EOF_LAUNCH
-
-chmod +x launch_ha.sh

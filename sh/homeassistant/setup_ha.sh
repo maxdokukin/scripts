@@ -1,4 +1,3 @@
-cat > setup_ha.sh <<'EOF_SETUP'
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -674,6 +673,3 @@ main() {
 }
 
 main "$@"
-EOF_SETUP
-
-chmod +x setup_ha.sh
