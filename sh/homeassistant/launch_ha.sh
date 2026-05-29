@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# LaunchDaemons do not always provide HOME.
+HOME="${HOME:-/var/root}"
+export HOME
+
 # launch_ha.sh
 # Manage a Home Assistant OS VM on macOS using QEMU + HVF.
 #
@@ -59,7 +63,6 @@ EFI_VARS="${EFI_VARS:-}"
 FIRMWARE_MODE="${FIRMWARE_MODE:-auto}"
 ALLOW_UNSUPPORTED_HAOS_IMAGE="${ALLOW_UNSUPPORTED_HAOS_IMAGE:-0}"
 
-# Bridge-mode settings.
 NETWORK_MODE="${NETWORK_MODE:-bridged}"
 BRIDGE_IF="${BRIDGE_IF:-en2}"
 VM_MAC="${VM_MAC:-52:54:00:6b:92:98}"
@@ -387,7 +390,7 @@ check_bridge_permissions() {
   [[ -n "$HA_LAN_IP" ]] || die "HA_LAN_IP is empty. Example: HA_LAN_IP=192.168.1.206"
 
   if [[ "$(id -u)" -ne 0 ]]; then
-    die "vmnet-bridged requires administrator/root privileges. Start with sudo, or use HALauncher.app with administrator privileges."
+    die "vmnet-bridged requires administrator/root privileges. Start with sudo, or run through the system LaunchDaemon."
   fi
 }
 
@@ -541,6 +544,8 @@ start_foreground() {
   fi
 
   rm -f "$QMP_SOCKET"
+  touch "$SERIAL_LOG" "$QEMU_LOG"
+  echo "$$" > "$PID_FILE"
 
   log "Starting $VM_NAME in foreground."
   log "QEMU: $QEMU_BIN"
@@ -557,6 +562,43 @@ start_foreground() {
     "${QEMU_ARGS[@]}" \
     -display none \
     -serial mon:stdio
+}
+
+start_launchd() {
+  preflight
+
+  if is_running; then
+    log "$VM_NAME is already running. PID: $(cat "$PID_FILE")"
+    log "URL: $(ha_url)"
+    return 0
+  fi
+
+  rm -f "$QMP_SOCKET"
+  touch "$SERIAL_LOG" "$QEMU_LOG"
+  echo "$$" > "$PID_FILE"
+
+  log "Starting $VM_NAME for launchd."
+  log "RAM: ${RAM_MB} MB"
+  log "CPUs: $CPUS"
+  log "Disk: $DISK_PATH"
+  log "QEMU: $QEMU_BIN"
+  log "Machine: $QEMU_MACHINE"
+  log "CPU: $QEMU_CPU"
+  log "Firmware: $EFI_CODE"
+  [[ -n "${EFI_VARS:-}" ]] && log "Firmware vars: $EFI_VARS"
+  [[ -n "${HAOS_ASSET_NAME:-}" ]] && log "HAOS asset: $HAOS_ASSET_NAME"
+  log "Network mode: bridged"
+  log "Bridge interface: $BRIDGE_IF"
+  log "VM MAC: $VM_MAC"
+  log "URL after boot: $(ha_url)"
+  log "Serial log: $SERIAL_LOG"
+  log "QEMU log: $QEMU_LOG"
+
+  exec "$QEMU_BIN" \
+    "${QEMU_ARGS[@]}" \
+    -display none \
+    -serial "file:$SERIAL_LOG" \
+    >>"$QEMU_LOG" 2>&1
 }
 
 stop_vm() {
@@ -723,7 +765,8 @@ Usage:
 
 Commands:
   start       Start VM in background
-  foreground  Start VM in foreground console
+  launchd     Start VM in non-interactive foreground mode for LaunchDaemon
+  foreground  Start VM in interactive foreground console
   stop        Gracefully stop VM
   kill        Force-kill VM
   restart     Restart VM
@@ -750,6 +793,7 @@ cmd="${1:-start}"
 
 case "$cmd" in
   start) start_background ;;
+  launchd) start_launchd ;;
   foreground) start_foreground ;;
   stop) stop_vm ;;
   kill) kill_vm ;;
