@@ -4,9 +4,7 @@ set -euo pipefail
 # launch_ha.sh
 # Manage a Home Assistant OS VM on macOS using QEMU + HVF.
 #
-# Designed to pair with the revised setup_ha.sh that prepares a supported
-# Home Assistant OS VM qcow2 disk, especially:
-#   Intel/x86_64 Mac: haos_ova-<version>.qcow2.xz
+# Bridge-mode version.
 #
 # Usage:
 #   ./launch_ha.sh start
@@ -15,7 +13,6 @@ set -euo pipefail
 #   ./launch_ha.sh stop
 #
 # Environment overrides:
-#   HA_PORT=8124 ./launch_ha.sh start
 #   RAM_MB=8192 CPUS=4 ./launch_ha.sh start
 #   ALLOW_UNSUPPORTED_HAOS_IMAGE=1 ./launch_ha.sh start
 
@@ -62,6 +59,12 @@ EFI_VARS="${EFI_VARS:-}"
 FIRMWARE_MODE="${FIRMWARE_MODE:-auto}"
 ALLOW_UNSUPPORTED_HAOS_IMAGE="${ALLOW_UNSUPPORTED_HAOS_IMAGE:-0}"
 
+# Bridge-mode settings.
+NETWORK_MODE="${NETWORK_MODE:-bridged}"
+BRIDGE_IF="${BRIDGE_IF:-en2}"
+VM_MAC="${VM_MAC:-52:54:00:6b:92:98}"
+HA_LAN_IP="${HA_LAN_IP:-192.168.1.206}"
+
 case "$HOST_ARCH" in
   x86_64)
     QEMU_SYSTEM_NAME="qemu-system-x86_64"
@@ -92,6 +95,21 @@ SERIAL_LOG="$LOG_DIR/${VM_NAME}.serial.log"
 QEMU_LOG="$LOG_DIR/${VM_NAME}.qemu.log"
 
 mkdir -p "$LOG_DIR"
+
+ha_url() {
+  printf 'http://%s:%s\n' "$HA_LAN_IP" "$HA_PORT"
+}
+
+tcp_port_open() {
+  local host="$1"
+  local port="$2"
+
+  if nc -z -G 5 "$host" "$port" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  nc -z "$host" "$port" >/dev/null 2>&1
+}
 
 find_port_bin() {
   if command -v port >/dev/null 2>&1; then
@@ -359,16 +377,17 @@ is_running() {
   return 1
 }
 
-check_port_available() {
-  if command -v lsof >/dev/null 2>&1; then
-    if lsof -nP -iTCP:"$HA_PORT" -sTCP:LISTEN >/dev/null 2>&1; then
-      die "Port $HA_PORT is already in use. Stop the conflicting process or run: HA_PORT=8124 $0 start"
-    fi
-    return 0
+check_bridge_permissions() {
+  if [[ "$NETWORK_MODE" != "bridged" ]]; then
+    die "This drop-in replacement is bridge-mode only. Set NETWORK_MODE=bridged in vm.conf."
   fi
 
-  if nc -z 0.0.0.0 "$HA_PORT" >/dev/null 2>&1; then
-    die "Port $HA_PORT is already in use. Stop the conflicting process or run: HA_PORT=8124 $0 start"
+  [[ -n "$BRIDGE_IF" ]] || die "BRIDGE_IF is empty. Example: BRIDGE_IF=en2"
+  [[ -n "$VM_MAC" ]] || die "VM_MAC is empty. Example: VM_MAC=52:54:00:6b:92:98"
+  [[ -n "$HA_LAN_IP" ]] || die "HA_LAN_IP is empty. Example: HA_LAN_IP=192.168.1.206"
+
+  if [[ "$(id -u)" -ne 0 ]]; then
+    die "vmnet-bridged requires administrator/root privileges. Start with sudo, or use HALauncher.app with administrator privileges."
   fi
 }
 
@@ -394,8 +413,8 @@ build_qemu_args() {
     "${QEMU_FIRMWARE_ARGS[@]}"
     -drive "if=none,id=haosdisk,format=qcow2,file=$DISK_PATH,cache=writethrough,discard=unmap"
     -device "virtio-blk-pci,drive=haosdisk,bootindex=0"
-    -netdev "user,id=net0,hostfwd=tcp:0.0.0.0:${HA_PORT}-:8123"
-    -device "virtio-net-pci,netdev=net0"
+    -netdev "vmnet-bridged,id=net0,ifname=${BRIDGE_IF}"
+    -device "virtio-net-pci,netdev=net0,mac=${VM_MAC}"
     -device "virtio-rng-pci"
     -qmp "unix:$QMP_SOCKET,server=on,wait=off"
   )
@@ -419,6 +438,7 @@ preflight() {
   check_disk_readable
   find_efi_firmware
   ensure_efi_vars
+  check_bridge_permissions
   build_qemu_args
 }
 
@@ -433,8 +453,10 @@ show_recent_logs() {
 wait_for_port() {
   local max_seconds="${1:-600}"
   local elapsed=0
+  local url
+  url="$(ha_url)"
 
-  log "Waiting for Home Assistant on http://0.0.0.0:$HA_PORT"
+  log "Waiting for Home Assistant on $url"
 
   while (( elapsed < max_seconds )); do
     if ! is_running; then
@@ -443,8 +465,8 @@ wait_for_port() {
       return 1
     fi
 
-    if nc -z 0.0.0.0 "$HA_PORT" >/dev/null 2>&1; then
-      log "Home Assistant port is open: http://0.0.0.0:$HA_PORT"
+    if tcp_port_open "$HA_LAN_IP" "$HA_PORT"; then
+      log "Home Assistant port is open: $url"
       return 0
     fi
 
@@ -458,7 +480,7 @@ wait_for_port() {
 
   log "VM is running, but Home Assistant has not opened port $HA_PORT yet."
   log "Check logs with: $0 logs"
-  log "Open manually when ready: http://0.0.0.0:$HA_PORT"
+  log "Open manually when ready: $url"
   return 0
 }
 
@@ -467,11 +489,10 @@ start_background() {
 
   if is_running; then
     log "$VM_NAME is already running. PID: $(cat "$PID_FILE")"
-    log "URL: http://0.0.0.0:$HA_PORT"
+    log "URL: $(ha_url)"
     return 0
   fi
 
-  check_port_available
   rm -f "$QMP_SOCKET"
   touch "$SERIAL_LOG" "$QEMU_LOG"
 
@@ -485,7 +506,10 @@ start_background() {
   log "Firmware: $EFI_CODE"
   [[ -n "${EFI_VARS:-}" ]] && log "Firmware vars: $EFI_VARS"
   [[ -n "${HAOS_ASSET_NAME:-}" ]] && log "HAOS asset: $HAOS_ASSET_NAME"
-  log "URL: http://0.0.0.0:$HA_PORT"
+  log "Network mode: bridged"
+  log "Bridge interface: $BRIDGE_IF"
+  log "VM MAC: $VM_MAC"
+  log "URL: $(ha_url)"
 
   nohup "$QEMU_BIN" \
     "${QEMU_ARGS[@]}" \
@@ -516,7 +540,6 @@ start_foreground() {
     die "$VM_NAME is already running. Stop it first with: $0 stop"
   fi
 
-  check_port_available
   rm -f "$QMP_SOCKET"
 
   log "Starting $VM_NAME in foreground."
@@ -524,7 +547,10 @@ start_foreground() {
   log "Disk: $DISK_PATH"
   log "Firmware: $EFI_CODE"
   [[ -n "${EFI_VARS:-}" ]] && log "Firmware vars: $EFI_VARS"
-  log "URL after boot: http://0.0.0.0:$HA_PORT"
+  log "Network mode: bridged"
+  log "Bridge interface: $BRIDGE_IF"
+  log "VM MAC: $VM_MAC"
+  log "URL after boot: $(ha_url)"
   log "Exit QEMU console with Ctrl-A then X."
 
   exec "$QEMU_BIN" \
@@ -606,7 +632,11 @@ status_vm() {
 
     echo "$VM_NAME is running."
     echo "PID: $pid"
-    echo "URL: http://0.0.0.0:$HA_PORT"
+    echo "URL: $(ha_url)"
+    echo "Network mode: bridged"
+    echo "Bridge interface: $BRIDGE_IF"
+    echo "VM MAC: $VM_MAC"
+    echo "HA LAN IP: $HA_LAN_IP"
     echo "Disk: $DISK_PATH"
     echo "QEMU: $QEMU_BIN"
     echo "Machine: $QEMU_MACHINE"
@@ -618,14 +648,18 @@ status_vm() {
     echo "Serial log: $SERIAL_LOG"
     echo "QEMU log: $QEMU_LOG"
 
-    if nc -z 0.0.0.0 "$HA_PORT" >/dev/null 2>&1; then
+    if tcp_port_open "$HA_LAN_IP" "$HA_PORT"; then
       echo "Home Assistant port: open"
     else
       echo "Home Assistant port: not open yet"
     fi
   else
     echo "$VM_NAME is not running."
-    echo "URL: http://0.0.0.0:$HA_PORT"
+    echo "URL: $(ha_url)"
+    echo "Network mode: bridged"
+    echo "Bridge interface: $BRIDGE_IF"
+    echo "VM MAC: $VM_MAC"
+    echo "HA LAN IP: $HA_LAN_IP"
     echo "Disk: ${DISK_PATH:-unknown}"
     [[ -n "${HA_BOARD:-}" ]] && echo "HA board: $HA_BOARD"
     [[ -n "${HAOS_ASSET_NAME:-}" ]] && echo "HAOS asset: $HAOS_ASSET_NAME"
@@ -649,7 +683,11 @@ doctor_vm() {
   echo "CPUs: $CPUS"
   echo "Firmware: $EFI_CODE"
   [[ -n "${EFI_VARS:-}" ]] && echo "Firmware vars: $EFI_VARS"
-  echo "URL: http://0.0.0.0:$HA_PORT"
+  echo "Network mode: bridged"
+  echo "Bridge interface: $BRIDGE_IF"
+  echo "VM MAC: $VM_MAC"
+  echo "HA LAN IP: $HA_LAN_IP"
+  echo "URL: $(ha_url)"
 }
 
 tail_logs() {
@@ -660,12 +698,12 @@ tail_logs() {
 }
 
 print_url() {
-  echo "http://0.0.0.0:$HA_PORT"
+  ha_url
 }
 
 open_url() {
   local url
-  url="http://0.0.0.0:$HA_PORT"
+  url="$(ha_url)"
   if command -v open >/dev/null 2>&1; then
     open "$url"
   else
@@ -697,9 +735,14 @@ Commands:
   help        Show this help
 
 Environment overrides:
-  HA_PORT=8124 $0 start
   RAM_MB=8192 CPUS=4 $0 start
   ALLOW_UNSUPPORTED_HAOS_IMAGE=1 $0 start
+
+Bridge settings in vm.conf:
+  NETWORK_MODE=bridged
+  BRIDGE_IF=en2
+  VM_MAC=52:54:00:6b:92:98
+  HA_LAN_IP=192.168.1.206
 EOF_USAGE
 }
 
