@@ -7,18 +7,21 @@ set -euo pipefail
 #
 # Expected final startup path:
 #   /Library/LaunchDaemons/com.homeassistant.vm.plist
-#       -> /bin/bash /Users/Shared/homeassistant/launch_ha.sh launchd
+#       -> /bin/bash "/Library/Application Support/homeassistant/launch_ha.sh" launchd
+#
+# The install lives under /Library/... (not /Users/...) so the LaunchDaemon can
+# find and exec it at early boot, before any user logs in.
 #
 # This intentionally does NOT use:
 #   LaunchAgent -> HALauncher.app -> AppleScript
 #
 # Run:
-#   sudo /bin/bash /Users/Shared/homeassistant/launc_onlogin_setup.sh
+#   sudo /bin/bash "/Library/Application Support/homeassistant/setup_launch_on_login.sh"
 
 LABEL="com.homeassistant.vm"
 PLIST="/Library/LaunchDaemons/${LABEL}.plist"
 
-HA_DIR="/Users/Shared/homeassistant"
+HA_DIR="/Library/Application Support/homeassistant"
 LAUNCH_SCRIPT="${HA_DIR}/launch_ha.sh"
 VM_CONF="${HA_DIR}/vm.conf"
 LOG_DIR="${HA_DIR}/logs"

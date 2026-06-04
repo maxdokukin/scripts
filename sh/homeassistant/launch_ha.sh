@@ -8,17 +8,7 @@ export HOME
 # launch_ha.sh
 # Manage a Home Assistant OS VM on macOS using QEMU + HVF.
 #
-# Bridge-mode version.
-#
-# Usage:
-#   ./launch_ha.sh start
-#   ./launch_ha.sh status
-#   ./launch_ha.sh logs
-#   ./launch_ha.sh stop
-#
-# Environment overrides:
-#   RAM_MB=8192 CPUS=4 ./launch_ha.sh start
-#   ALLOW_UNSUPPORTED_HAOS_IMAGE=1 ./launch_ha.sh start
+# Bridge-mode version with dedicated launchd mode.
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONF="$DIR/vm.conf"
@@ -40,15 +30,22 @@ die() {
 if [[ -f "$CONF" ]]; then
   # shellcheck source=/dev/null
   source "$CONF"
+  CONF_DIR="$DIR"
 elif [[ -f "$DEFAULT_CONF" ]]; then
   # shellcheck source=/dev/null
   source "$DEFAULT_CONF"
+  CONF_DIR="$(cd "$(dirname "$DEFAULT_CONF")" && pwd)"
 else
   die "vm.conf not found. Run ./setup_ha.sh first."
 fi
 
 VM_NAME="${VM_NAME:-homeassistant}"
-HA_DIR="${HA_DIR:-$DIR}"
+# Anchor the install to the directory vm.conf was loaded from. This overrides any
+# absolute HA_DIR baked into vm.conf by setup_ha.sh, so the whole folder can be
+# relocated (e.g. moved under /Library/Application Support) without regenerating
+# the config. DISK_PATH/EFI_VARS stored in vm.conf are validated for existence
+# elsewhere and fall back to HA_DIR-relative locations when stale.
+HA_DIR="$CONF_DIR"
 RAM_MB="${RAM_MB:-4096}"
 CPUS="${CPUS:-2}"
 HA_PORT="${HA_PORT:-8123}"
