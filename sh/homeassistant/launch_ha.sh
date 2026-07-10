@@ -65,6 +65,18 @@ BRIDGE_IF="${BRIDGE_IF:-en2}"
 VM_MAC="${VM_MAC:-52:54:00:6b:92:98}"
 HA_LAN_IP="${HA_LAN_IP:-192.168.1.206}"
 
+# USB passthrough controls.
+# These defaults match the original hardcoded passthrough devices:
+#   0x10c4:0xea60  CP210x / Silicon Labs USB serial adapter
+#   0x2357:0x0604  TP-Link UB500 Bluetooth adapter
+# On system boot, launchd can run before macOS has fully enumerated USB.
+# Keep REQUIRE_USB_ON_START=1 if Home Assistant depends on these adapters.
+PASSTHROUGH_CP210X="${PASSTHROUGH_CP210X:-1}"
+PASSTHROUGH_UB500="${PASSTHROUGH_UB500:-1}"
+USB_WAIT_SECONDS="${USB_WAIT_SECONDS:-180}"
+USB_WAIT_INTERVAL_SECONDS="${USB_WAIT_INTERVAL_SECONDS:-5}"
+REQUIRE_USB_ON_START="${REQUIRE_USB_ON_START:-1}"
+
 case "$HOST_ARCH" in
   x86_64)
     QEMU_SYSTEM_NAME="qemu-system-x86_64"
@@ -401,6 +413,126 @@ check_disk_readable() {
   fi
 }
 
+list_usb_passthrough_devices() {
+  if [[ "${PASSTHROUGH_CP210X:-1}" == "1" ]]; then
+    printf '0x10c4 0xea60 CP210x_USB_serial_adapter\n'
+  fi
+
+  if [[ "${PASSTHROUGH_UB500:-1}" == "1" ]]; then
+    printf '0x2357 0x0604 TP-Link_UB500_Bluetooth_adapter\n'
+  fi
+}
+
+hex_to_dec() {
+  local value="$1"
+  value="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
+  value="${value#0x}"
+  printf '%d\n' "$((16#$value))"
+}
+
+usb_device_present_system_profiler() {
+  local vendor="$1"
+  local product="$2"
+  local profile
+
+  command -v system_profiler >/dev/null 2>&1 || return 1
+  profile="$(system_profiler SPUSBDataType 2>/dev/null || true)"
+  [[ -n "$profile" ]] || return 1
+
+  vendor="$(printf '%s' "$vendor" | tr '[:upper:]' '[:lower:]')"
+  product="$(printf '%s' "$product" | tr '[:upper:]' '[:lower:]')"
+
+  printf '%s\n' "$profile" | awk -v vendor="$vendor" -v product="$product" '
+    BEGIN { RS=""; found=0 }
+    {
+      block=tolower($0)
+      if (index(block, "vendor id: " vendor) && index(block, "product id: " product)) {
+        found=1
+      }
+    }
+    END { exit found ? 0 : 1 }
+  '
+}
+
+usb_device_present_ioreg() {
+  local vendor="$1"
+  local product="$2"
+  local vendor_dec product_dec ioreg_out
+
+  command -v ioreg >/dev/null 2>&1 || return 1
+  vendor_dec="$(hex_to_dec "$vendor")"
+  product_dec="$(hex_to_dec "$product")"
+  ioreg_out="$(ioreg -p IOUSB -l -w 0 2>/dev/null || true)"
+  [[ -n "$ioreg_out" ]] || return 1
+
+  # This is a fallback check. It is intentionally simple because the two IDs are
+  # specific to the passthrough adapters used by this VM configuration.
+  printf '%s\n' "$ioreg_out" | grep -q '"idVendor" = '"$vendor_dec" || return 1
+  printf '%s\n' "$ioreg_out" | grep -q '"idProduct" = '"$product_dec" || return 1
+}
+
+usb_device_present() {
+  local vendor="$1"
+  local product="$2"
+
+  usb_device_present_system_profiler "$vendor" "$product" && return 0
+  usb_device_present_ioreg "$vendor" "$product" && return 0
+  return 1
+}
+
+usb_passthrough_enabled() {
+  [[ -n "$(list_usb_passthrough_devices)" ]]
+}
+
+wait_for_usb_devices() {
+  if ! usb_passthrough_enabled; then
+    log "USB passthrough disabled. Skipping USB wait."
+    return 0
+  fi
+
+  if [[ "${USB_WAIT_SECONDS:-180}" == "0" ]]; then
+    warn "USB wait disabled with USB_WAIT_SECONDS=0."
+    return 0
+  fi
+
+  local timeout="${USB_WAIT_SECONDS:-180}"
+  local interval="${USB_WAIT_INTERVAL_SECONDS:-5}"
+  local elapsed=0
+  local vendor product label missing
+
+  log "Waiting up to ${timeout}s for USB passthrough devices."
+
+  while (( elapsed <= timeout )); do
+    missing=0
+
+    while read -r vendor product label; do
+      [[ -n "$vendor" ]] || continue
+
+      if usb_device_present "$vendor" "$product"; then
+        log "USB present: $label ($vendor:$product)"
+      else
+        missing=1
+        log "USB not ready yet: $label ($vendor:$product)"
+      fi
+    done < <(list_usb_passthrough_devices)
+
+    if (( missing == 0 )); then
+      log "All USB passthrough devices are present."
+      return 0
+    fi
+
+    sleep "$interval"
+    elapsed=$((elapsed + interval))
+  done
+
+  if [[ "${REQUIRE_USB_ON_START:-1}" == "1" ]]; then
+    die "USB passthrough devices were not ready after ${timeout}s. Refusing to start QEMU. Set REQUIRE_USB_ON_START=0 to start anyway."
+  fi
+
+  warn "USB passthrough devices were not ready after ${timeout}s. Starting QEMU anyway because REQUIRE_USB_ON_START=0."
+  return 0
+}
+
 build_qemu_args() {
   build_firmware_args
 
@@ -416,6 +548,22 @@ build_qemu_args() {
     -netdev "vmnet-bridged,id=net0,ifname=${BRIDGE_IF}"
     -device "virtio-net-pci,netdev=net0,mac=${VM_MAC}"
     -device "virtio-rng-pci"
+    -device "qemu-xhci,id=usbhub"
+  )
+
+  if [[ "${PASSTHROUGH_CP210X:-1}" == "1" ]]; then
+    QEMU_ARGS+=(
+      -device "usb-host,bus=usbhub.0,vendorid=0x10c4,productid=0xea60"
+    )
+  fi
+
+  if [[ "${PASSTHROUGH_UB500:-1}" == "1" ]]; then
+    QEMU_ARGS+=(
+      -device "usb-host,bus=usbhub.0,id=usb_bt_ub500,vendorid=0x2357,productid=0x0604"
+    )
+  fi
+
+  QEMU_ARGS+=(
     -qmp "unix:$QMP_SOCKET,server=on,wait=off"
   )
 
@@ -439,6 +587,7 @@ preflight() {
   find_efi_firmware
   ensure_efi_vars
   check_bridge_permissions
+  wait_for_usb_devices
   build_qemu_args
 }
 
@@ -777,12 +926,23 @@ Commands:
 Environment overrides:
   RAM_MB=8192 CPUS=4 $0 start
   ALLOW_UNSUPPORTED_HAOS_IMAGE=1 $0 start
+  USB_WAIT_SECONDS=180 $0 start
+  REQUIRE_USB_ON_START=0 $0 start
+  PASSTHROUGH_CP210X=0 $0 start
+  PASSTHROUGH_UB500=0 $0 start
 
 Bridge settings in vm.conf:
   NETWORK_MODE=bridged
   BRIDGE_IF=en2
   VM_MAC=52:54:00:6b:92:98
   HA_LAN_IP=192.168.1.206
+
+USB settings in vm.conf:
+  PASSTHROUGH_CP210X=1
+  PASSTHROUGH_UB500=1
+  USB_WAIT_SECONDS=180
+  USB_WAIT_INTERVAL_SECONDS=5
+  REQUIRE_USB_ON_START=1
 EOF_USAGE
 }
 
