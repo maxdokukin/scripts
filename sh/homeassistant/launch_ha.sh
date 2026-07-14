@@ -68,7 +68,7 @@ HA_LAN_IP="${HA_LAN_IP:-192.168.1.206}"
 # USB passthrough controls.
 # These defaults match the original hardcoded passthrough devices:
 #   0x10c4:0xea60  CP210x / Silicon Labs USB serial adapter
-#   0x2357:0x0604  TP-Link UB500 Bluetooth adapter
+#   0x2357:0x0604  CSR8510 A10 Bluetooth adapter
 # On system boot, launchd can run before macOS has fully enumerated USB.
 # Keep REQUIRE_USB_ON_START=1 if Home Assistant depends on these adapters.
 PASSTHROUGH_CP210X="${PASSTHROUGH_CP210X:-1}"
@@ -419,7 +419,7 @@ list_usb_passthrough_devices() {
   fi
 
   if [[ "${PASSTHROUGH_UB500:-1}" == "1" ]]; then
-    printf '0x2357 0x0604 TP-Link_UB500_Bluetooth_adapter\n'
+    printf '0x0a12 0x0001 CSR8510_A10_Bluetooth_adapter\n'
   fi
 }
 
@@ -559,7 +559,7 @@ build_qemu_args() {
 
   if [[ "${PASSTHROUGH_UB500:-1}" == "1" ]]; then
     QEMU_ARGS+=(
-      -device "usb-host,bus=usbhub.0,id=usb_bt_ub500,vendorid=0x2357,productid=0x0604"
+      -device "usb-host,bus=usbhub.0,id=usb_bt_csr8510,vendorid=0x0a12,productid=0x0001"
     )
   fi
 
